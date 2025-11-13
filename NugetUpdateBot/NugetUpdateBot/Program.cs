@@ -1,10 +1,13 @@
 using System.CommandLine;
 using System.CommandLine.Invocation;
+using System.Runtime.CompilerServices;
 using NuGet.Common;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using System.Xml.Linq;
+
+[assembly: InternalsVisibleTo("NugetUpdateBot.Tests")]
 
 // Exit codes
 const int SUCCESS = 0;
@@ -58,15 +61,15 @@ async Task<int> ScanCommandHandler(string projectPath, bool includePrerelease, b
             return FILE_NOT_FOUND;
         }
 
-        var packages = ParseProjectFile(projectPath);
+        var packages = PackageScanner.ParseProjectFile(projectPath);
         if (verbose)
         {
             Console.WriteLine($"Found {packages.Count} package references");
         }
 
-        var updates = await CheckPackagesAsync(packages, includePrerelease, noCache, verbose);
+        var updates = await PackageScanner.CheckPackagesAsync(packages, repository, throttler, logger, includePrerelease, noCache, verbose);
 
-        DisplayScanResults(updates);
+        PackageScanner.DisplayScanResults(updates);
         return SUCCESS;
     }
     catch (HttpRequestException ex)
@@ -81,44 +84,49 @@ async Task<int> ScanCommandHandler(string projectPath, bool includePrerelease, b
     }
 }
 
-List<PackageReference> ParseProjectFile(string projectPath)
+internal static class PackageScanner
 {
-    var packages = new List<PackageReference>();
-
-    try
+    internal static List<PackageReference> ParseProjectFile(string projectPath)
     {
-        var doc = XDocument.Load(projectPath);
-        var packageRefs = doc.Descendants("PackageReference");
+        var packages = new List<PackageReference>();
 
-        foreach (var packageRef in packageRefs)
+        try
         {
-            var name = packageRef.Attribute("Include")?.Value;
-            var versionStr = packageRef.Attribute("Version")?.Value;
+            var doc = XDocument.Load(projectPath);
+            var packageRefs = doc.Descendants("PackageReference");
 
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(versionStr))
+            foreach (var packageRef in packageRefs)
             {
-                continue;
-            }
+                var name = packageRef.Attribute("Include")?.Value;
+                var versionStr = packageRef.Attribute("Version")?.Value;
 
-            if (NuGetVersion.TryParse(versionStr, out var version))
-            {
-                packages.Add(new PackageReference(name, version));
+                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(versionStr))
+                {
+                    continue;
+                }
+
+                if (NuGetVersion.TryParse(versionStr, out var version))
+                {
+                    packages.Add(new PackageReference(name, version));
+                }
             }
         }
-    }
-    catch (Exception ex)
-    {
-        throw new Exception($"Failed to parse project file: {ex.Message}", ex);
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to parse project file: {ex.Message}", ex);
+        }
+
+        return packages;
     }
 
-    return packages;
-}
-
-async Task<List<UpdateCandidate>> CheckPackagesAsync(
-    List<PackageReference> packages,
-    bool includePrerelease,
-    bool noCache,
-    bool verbose)
+    internal static async Task<List<UpdateCandidate>> CheckPackagesAsync(
+        List<PackageReference> packages,
+        SourceRepository repository,
+        SemaphoreSlim throttler,
+        ILogger logger,
+        bool includePrerelease,
+        bool noCache,
+        bool verbose)
 {
     var updates = new List<UpdateCandidate>();
 
@@ -131,7 +139,7 @@ async Task<List<UpdateCandidate>> CheckPackagesAsync(
 
         try
         {
-            var versions = await GetAllVersionsAsync(package.Name, noCache);
+            var versions = await GetAllVersionsAsync(repository, throttler, logger, package.Name, noCache);
             var latestStable = versions
                 .Where(v => !v.IsPrerelease)
                 .Where(v => v > package.Version)
@@ -172,81 +180,85 @@ async Task<List<UpdateCandidate>> CheckPackagesAsync(
     }
 
     return updates;
-}
-
-void DisplayScanResults(List<UpdateCandidate> updates)
-{
-    if (updates.Count == 0)
-    {
-        Console.WriteLine("All packages are up to date!");
-        return;
     }
 
-    Console.WriteLine($"\nFound {updates.Count} outdated packages:");
-    Console.WriteLine(new string('-', 80));
-    Console.WriteLine($"{"Package",-40} {"Current",10} → {"Latest",10}");
-    Console.WriteLine(new string('-', 80));
-
-    foreach (var update in updates)
+    internal static void DisplayScanResults(List<UpdateCandidate> updates)
     {
-        var latest = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
-        Console.WriteLine($"{update.PackageId,-40} {update.CurrentVersion,10} → {latest,10}");
-    }
-}
+        if (updates.Count == 0)
+        {
+            Console.WriteLine("All packages are up to date!");
+            return;
+        }
 
-async Task<IEnumerable<NuGetVersion>> GetAllVersionsAsync(
-    string packageId,
-    bool noCache,
-    CancellationToken cancellationToken = default)
-{
-    await throttler.WaitAsync(cancellationToken);
-    try
-    {
-        var resource = await repository.GetResourceAsync<FindPackageByIdResource>();
-        using var cache = new SourceCacheContext { NoCache = noCache };
+        Console.WriteLine($"\nFound {updates.Count} outdated packages:");
+        Console.WriteLine(new string('-', 80));
+        Console.WriteLine($"{"Package",-40} {"Current",10} → {"Latest",10}");
+        Console.WriteLine(new string('-', 80));
 
-        return await resource.GetAllVersionsAsync(
-            packageId,
-            cache,
-            logger,
-            cancellationToken) ?? Enumerable.Empty<NuGetVersion>();
-    }
-    finally
-    {
-        throttler.Release();
-    }
-}
-
-UpdateType DetermineUpdateType(NuGetVersion current, NuGetVersion latest)
-{
-    if (latest.IsPrerelease && !current.IsPrerelease)
-    {
-        return UpdateType.Prerelease;
+        foreach (var update in updates)
+        {
+            var latest = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
+            Console.WriteLine($"{update.PackageId,-40} {update.CurrentVersion,10} → {latest,10}");
+        }
     }
 
-    if (latest.Major > current.Major)
+    internal static async Task<IEnumerable<NuGetVersion>> GetAllVersionsAsync(
+        SourceRepository repository,
+        SemaphoreSlim throttler,
+        ILogger logger,
+        string packageId,
+        bool noCache,
+        CancellationToken cancellationToken = default)
     {
-        return UpdateType.Major;
+        await throttler.WaitAsync(cancellationToken);
+        try
+        {
+            var resource = await repository.GetResourceAsync<FindPackageByIdResource>();
+            using var cache = new SourceCacheContext { NoCache = noCache };
+
+            return await resource.GetAllVersionsAsync(
+                packageId,
+                cache,
+                logger,
+                cancellationToken) ?? Enumerable.Empty<NuGetVersion>();
+        }
+        finally
+        {
+            throttler.Release();
+        }
     }
 
-    if (latest.Minor > current.Minor)
+    internal static UpdateType DetermineUpdateType(NuGetVersion current, NuGetVersion latest)
     {
-        return UpdateType.Minor;
-    }
+        if (latest.IsPrerelease && !current.IsPrerelease)
+        {
+            return UpdateType.Prerelease;
+        }
 
-    return UpdateType.Patch;
+        if (latest.Major > current.Major)
+        {
+            return UpdateType.Major;
+        }
+
+        if (latest.Minor > current.Minor)
+        {
+            return UpdateType.Minor;
+        }
+
+        return UpdateType.Patch;
+    }
 }
 
 // Type Definitions
-enum UpdateType { Patch, Minor, Major, Prerelease }
-enum UpdatePolicy { Patch, Minor, Major }
-enum ProjectType { Console, ClassLibrary, Web, Test, Unknown }
-enum UpdateReportType { Preview, Applied }
-enum OutputFormat { Console, Json }
+public enum UpdateType { Patch, Minor, Major, Prerelease }
+public enum UpdatePolicy { Patch, Minor, Major }
+public enum ProjectType { Console, ClassLibrary, Web, Test, Unknown }
+public enum UpdateReportType { Preview, Applied }
+public enum OutputFormat { Console, Json }
 
-record PackageReference(string Name, NuGetVersion Version, string? TargetFramework = null);
+public record PackageReference(string Name, NuGetVersion Version, string? TargetFramework = null);
 
-record UpdateCandidate(
+public record UpdateCandidate(
     string PackageId,
     NuGetVersion CurrentVersion,
     NuGetVersion LatestStableVersion,
@@ -255,14 +267,14 @@ record UpdateCandidate(
     bool IsDeprecated = false
 );
 
-record UpdateRule(
+internal record UpdateRule(
     string? PackagePattern,
     UpdatePolicy Policy,
     bool AllowPrerelease = false,
     string? MaxVersion = null
 );
 
-record ProjectContext(
+internal record ProjectContext(
     string FilePath,
     string ProjectName,
     List<PackageReference> Packages,
@@ -270,7 +282,7 @@ record ProjectContext(
     ProjectType Type
 );
 
-record UpdateReport(
+internal record UpdateReport(
     DateTime GeneratedAt,
     string ProjectPath,
     List<UpdateCandidate> Updates,
@@ -278,7 +290,7 @@ record UpdateReport(
     UpdateSummary Summary
 );
 
-record UpdateSummary(
+internal record UpdateSummary(
     int TotalPackages,
     int OutdatedCount,
     int MajorUpdates,
@@ -287,7 +299,7 @@ record UpdateSummary(
     int ExcludedCount
 );
 
-record BotConfiguration(
+internal record BotConfiguration(
     string[] ExcludedPackages,
     UpdatePolicy DefaultPolicy,
     bool IncludePrerelease,
