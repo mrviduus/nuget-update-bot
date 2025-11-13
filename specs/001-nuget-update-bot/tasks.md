@@ -92,20 +92,20 @@
 
 ### Tests for User Story 3
 
-- [ ] T043 [P] [US3] Write test for JSON report generation in NugetUpdateBot.Tests/UnitTests/ReportGeneratorTests.cs
-- [ ] T044 [P] [US3] Write test for console report formatting in NugetUpdateBot.Tests/UnitTests/ConsoleReportTests.cs
-- [ ] T045 [P] [US3] Write test for UpdateSummary calculations in NugetUpdateBot.Tests/UnitTests/SummaryTests.cs
+- [X] T043 [P] [US3] Write test for JSON report generation in NugetUpdateBot.Tests/UnitTests/ReportGeneratorTests.cs
+- [X] T044 [P] [US3] Write test for console report formatting in NugetUpdateBot.Tests/UnitTests/ConsoleReportTests.cs
+- [X] T045 [P] [US3] Write test for UpdateSummary calculations in NugetUpdateBot.Tests/UnitTests/SummaryTests.cs
 
 ### Implementation for User Story 3
 
-- [ ] T046 [US3] Create UpdateReport and UpdateSummary records in Program.cs
-- [ ] T047 [US3] Implement report data collection from scan results in Program.cs
-- [ ] T048 [US3] Add JSON serialization using System.Text.Json in Program.cs
-- [ ] T049 [US3] Create console report formatter with table layout in Program.cs
-- [ ] T050 [US3] Add report command with options (--format, --output, --include-up-to-date) in Program.cs
-- [ ] T051 [US3] Implement file output option for reports in Program.cs
-- [ ] T052 [US3] Connect report command handler to formatting logic in Program.cs
-- [ ] T053 [US3] Verify all US3 tests pass and reports generate correctly
+- [X] T046 [US3] Create UpdateReport and UpdateSummary records in Program.cs
+- [X] T047 [US3] Implement report data collection from scan results in Program.cs
+- [X] T048 [US3] Add JSON serialization using System.Text.Json in Program.cs
+- [X] T049 [US3] Create console report formatter with table layout in Program.cs
+- [X] T050 [US3] Add report command with options (--format, --output, --include-up-to-date) in Program.cs
+- [X] T051 [US3] Implement file output option for reports in Program.cs
+- [X] T052 [US3] Connect report command handler to formatting logic in Program.cs
+- [X] T053 [US3] Verify all US3 tests pass and reports generate correctly
 
 ## Phase 6: User Story 4 - Configure Update Rules (P3)
 

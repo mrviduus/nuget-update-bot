@@ -6,6 +6,7 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using System.Xml.Linq;
+using System.Text.Json;
 
 [assembly: InternalsVisibleTo("NugetUpdateBot.Tests")]
 
@@ -64,6 +65,29 @@ updateCommand.SetHandler(async (string project, bool dryRun, UpdatePolicy policy
 }, updateProjectOption, dryRunOption, policyOption, excludeOption, updateVerboseOption, updatePrereleaseOption);
 
 rootCommand.AddCommand(updateCommand);
+
+// Report command
+var reportCommand = new Command("report", "Generate update report");
+var reportProjectOption = new Option<string>("--project", "-p") { Description = "Path to .csproj file or directory", IsRequired = true };
+var formatOption = new Option<OutputFormat>("--format", () => OutputFormat.Console) { Description = "Output format: Console or Json" };
+var outputOption = new Option<string?>("--output", "-o") { Description = "Output file path (for JSON format)" };
+var includeUpToDateOption = new Option<bool>("--include-up-to-date") { Description = "Include up-to-date packages in report" };
+var reportVerboseOption = new Option<bool>("--verbose", "-v") { Description = "Enable verbose output" };
+var reportPrereleaseOption = new Option<bool>("--include-prerelease") { Description = "Include pre-release versions" };
+
+reportCommand.AddOption(reportProjectOption);
+reportCommand.AddOption(formatOption);
+reportCommand.AddOption(outputOption);
+reportCommand.AddOption(includeUpToDateOption);
+reportCommand.AddOption(reportVerboseOption);
+reportCommand.AddOption(reportPrereleaseOption);
+
+reportCommand.SetHandler(async (string project, OutputFormat format, string? output, bool includeUpToDate, bool verbose, bool includePrerelease) =>
+{
+    Environment.ExitCode = await ReportCommandHandler(project, format, output, includeUpToDate, verbose, includePrerelease);
+}, reportProjectOption, formatOption, outputOption, includeUpToDateOption, reportVerboseOption, reportPrereleaseOption);
+
+rootCommand.AddCommand(reportCommand);
 
 // Execute
 return await rootCommand.InvokeAsync(args);
@@ -198,6 +222,65 @@ async Task<int> UpdateCommandHandler(string projectPath, bool dryRun, UpdatePoli
 
         Console.WriteLine($"\nSuccessfully updated {appliedCount} package(s)");
         Console.WriteLine($"Backup saved to: {backupPath}");
+
+        return SUCCESS;
+    }
+    catch (HttpRequestException ex)
+    {
+        Console.Error.WriteLine($"Network error: {ex.Message}");
+        return NETWORK_ERROR;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: {ex.Message}");
+        return GENERAL_ERROR;
+    }
+}
+
+async Task<int> ReportCommandHandler(string projectPath, OutputFormat format, string? output, bool includeUpToDate, bool verbose, bool includePrerelease)
+{
+    try
+    {
+        if (verbose)
+        {
+            Console.WriteLine($"Generating report for: {projectPath}");
+            Console.WriteLine($"Format: {format}");
+        }
+
+        if (!File.Exists(projectPath))
+        {
+            Console.Error.WriteLine($"Error: Project file not found: {projectPath}");
+            return FILE_NOT_FOUND;
+        }
+
+        // Scan for updates
+        var packages = PackageScanner.ParseProjectFile(projectPath);
+        if (verbose)
+        {
+            Console.WriteLine($"Found {packages.Count} package references");
+        }
+
+        var updates = await PackageScanner.CheckPackagesAsync(packages, repository, throttler, logger, includePrerelease, noCache: true, verbose);
+
+        // Generate report based on format
+        if (format == OutputFormat.Json)
+        {
+            var json = ReportGenerator.GenerateJsonReport(projectPath, updates, UpdateReportType.Preview);
+
+            if (!string.IsNullOrEmpty(output))
+            {
+                ReportGenerator.SaveReportToFile(json, output);
+                Console.WriteLine($"Report saved to: {output}");
+            }
+            else
+            {
+                Console.WriteLine(json);
+            }
+        }
+        else // Console format
+        {
+            ConsoleReportFormatter.FormatConsoleReport(updates, projectPath, UpdateReportType.Preview);
+        }
 
         return SUCCESS;
     }
@@ -546,6 +629,105 @@ internal static class PackageScanner
         }
 
         return UpdateType.Patch;
+    }
+}
+
+internal static class ReportGenerator
+{
+    internal static string GenerateJsonReport(string projectPath, List<UpdateCandidate> updates, UpdateReportType reportType)
+    {
+        var totalPackages = updates.Count;
+        var summary = SummaryCalculator.CalculateSummary(updates, totalPackages, excludedCount: 0);
+
+        var report = new UpdateReport(
+            GeneratedAt: DateTime.UtcNow,
+            ProjectPath: projectPath,
+            Updates: updates,
+            Type: reportType,
+            Summary: summary
+        );
+
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = null // Use Pascal case as-is
+        };
+
+        return JsonSerializer.Serialize(report, options);
+    }
+
+    internal static void SaveReportToFile(string json, string outputPath)
+    {
+        File.WriteAllText(outputPath, json);
+    }
+}
+
+internal static class ConsoleReportFormatter
+{
+    internal static void FormatConsoleReport(List<UpdateCandidate> updates, string projectPath, UpdateReportType reportType)
+    {
+        var projectName = Path.GetFileName(projectPath);
+
+        Console.WriteLine();
+        Console.WriteLine($"Update Report - {reportType}");
+        Console.WriteLine($"Project: {projectName}");
+        Console.WriteLine($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine(new string('=', 80));
+
+        if (updates.Count == 0)
+        {
+            Console.WriteLine("No outdated packages found");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{"Package",-40} {"Current",10} → {"Latest",10} {"Type",10}");
+        Console.WriteLine(new string('-', 80));
+
+        foreach (var update in updates)
+        {
+            var latest = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
+            var packageName = update.PackageId;
+
+            if (update.IsDeprecated)
+            {
+                packageName += " [DEPRECATED]";
+            }
+
+            Console.WriteLine($"{packageName,-40} {update.CurrentVersion,10} → {latest,10} {update.UpdateType,10}");
+        }
+
+        Console.WriteLine(new string('-', 80));
+        Console.WriteLine();
+
+        // Summary
+        var summary = SummaryCalculator.CalculateSummary(updates, updates.Count, excludedCount: 0);
+        Console.WriteLine("Summary:");
+        Console.WriteLine($"  Total outdated: {summary.OutdatedCount}");
+        Console.WriteLine($"  Major updates:  {summary.MajorUpdates}");
+        Console.WriteLine($"  Minor updates:  {summary.MinorUpdates}");
+        Console.WriteLine($"  Patch updates:  {summary.PatchUpdates}");
+        Console.WriteLine();
+    }
+}
+
+internal static class SummaryCalculator
+{
+    internal static UpdateSummary CalculateSummary(List<UpdateCandidate> updates, int totalPackages, int excludedCount)
+    {
+        var outdatedCount = updates.Count;
+        var majorUpdates = updates.Count(u => u.UpdateType == UpdateType.Major);
+        var minorUpdates = updates.Count(u => u.UpdateType == UpdateType.Minor);
+        var patchUpdates = updates.Count(u => u.UpdateType == UpdateType.Patch);
+
+        return new UpdateSummary(
+            TotalPackages: totalPackages,
+            OutdatedCount: outdatedCount,
+            MajorUpdates: majorUpdates,
+            MinorUpdates: minorUpdates,
+            PatchUpdates: patchUpdates,
+            ExcludedCount: excludedCount
+        );
     }
 }
 
