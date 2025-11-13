@@ -4,6 +4,7 @@ using System.IO;
 
 namespace NugetUpdateBot.Tests.UnitTests;
 
+[Collection("ConsoleTests")]
 public class OutputFormatterTests
 {
     [Fact]

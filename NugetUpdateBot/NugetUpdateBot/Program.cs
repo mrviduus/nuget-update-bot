@@ -42,6 +42,29 @@ scanCommand.SetHandler(async (string project, bool includePrerelease, bool verbo
 
 rootCommand.AddCommand(scanCommand);
 
+// Update command
+var updateCommand = new Command("update", "Update outdated NuGet packages");
+var updateProjectOption = new Option<string>("--project", "-p") { Description = "Path to .csproj file or directory", IsRequired = true };
+var dryRunOption = new Option<bool>("--dry-run") { Description = "Preview updates without applying them" };
+var policyOption = new Option<UpdatePolicy>("--policy", () => UpdatePolicy.Minor) { Description = "Update policy: Patch, Minor, or Major" };
+var excludeOption = new Option<string[]>("--exclude", () => Array.Empty<string>()) { Description = "Packages to exclude from updates" };
+var updateVerboseOption = new Option<bool>("--verbose", "-v") { Description = "Enable verbose output" };
+var updatePrereleaseOption = new Option<bool>("--include-prerelease") { Description = "Include pre-release versions" };
+
+updateCommand.AddOption(updateProjectOption);
+updateCommand.AddOption(dryRunOption);
+updateCommand.AddOption(policyOption);
+updateCommand.AddOption(excludeOption);
+updateCommand.AddOption(updateVerboseOption);
+updateCommand.AddOption(updatePrereleaseOption);
+
+updateCommand.SetHandler(async (string project, bool dryRun, UpdatePolicy policy, string[] exclude, bool verbose, bool includePrerelease) =>
+{
+    Environment.ExitCode = await UpdateCommandHandler(project, dryRun, policy, exclude, verbose, includePrerelease);
+}, updateProjectOption, dryRunOption, policyOption, excludeOption, updateVerboseOption, updatePrereleaseOption);
+
+rootCommand.AddCommand(updateCommand);
+
 // Execute
 return await rootCommand.InvokeAsync(args);
 
@@ -81,6 +104,283 @@ async Task<int> ScanCommandHandler(string projectPath, bool includePrerelease, b
     {
         Console.Error.WriteLine($"Error: {ex.Message}");
         return GENERAL_ERROR;
+    }
+}
+
+async Task<int> UpdateCommandHandler(string projectPath, bool dryRun, UpdatePolicy policy, string[] exclude, bool verbose, bool includePrerelease)
+{
+    try
+    {
+        if (verbose)
+        {
+            Console.WriteLine($"Updating project: {projectPath}");
+            Console.WriteLine($"Policy: {policy}");
+            if (exclude.Length > 0)
+            {
+                Console.WriteLine($"Excluded packages: {string.Join(", ", exclude)}");
+            }
+        }
+
+        if (!File.Exists(projectPath))
+        {
+            Console.Error.WriteLine($"Error: Project file not found: {projectPath}");
+            return FILE_NOT_FOUND;
+        }
+
+        // Scan for updates
+        var packages = PackageScanner.ParseProjectFile(projectPath);
+        if (verbose)
+        {
+            Console.WriteLine($"Found {packages.Count} package references");
+        }
+
+        var updates = await PackageScanner.CheckPackagesAsync(packages, repository, throttler, logger, includePrerelease, noCache: true, verbose);
+
+        // Apply policies and exclusions
+        var filteredUpdates = PolicyEngine.ApplyPolicies(updates, policy, exclude);
+
+        if (filteredUpdates.Count == 0)
+        {
+            Console.WriteLine("No updates to apply after filtering");
+            return SUCCESS;
+        }
+
+        // Dry-run mode
+        if (dryRun)
+        {
+            DryRunService.PreviewUpdates(projectPath, filteredUpdates);
+            return SUCCESS;
+        }
+
+        // Apply updates
+        if (verbose)
+        {
+            Console.WriteLine($"Creating backup...");
+        }
+
+        var backupPath = PackageUpdater.CreateBackup(projectPath);
+        if (verbose)
+        {
+            Console.WriteLine($"Backup created: {backupPath}");
+        }
+
+        Console.WriteLine($"Applying {filteredUpdates.Count} update(s)...");
+        var appliedCount = 0;
+
+        foreach (var update in filteredUpdates)
+        {
+            try
+            {
+                var newVersion = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
+                PackageUpdater.UpdatePackageVersion(projectPath, update.PackageId, newVersion.ToString());
+
+                if (verbose)
+                {
+                    Console.WriteLine($"Updated {update.PackageId}: {update.CurrentVersion} → {newVersion}");
+                }
+
+                appliedCount++;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Warning: Failed to update {update.PackageId}: {ex.Message}");
+            }
+        }
+
+        // Validate project file after updates
+        if (!PackageUpdater.ValidateProjectFile(projectPath))
+        {
+            Console.Error.WriteLine("Error: Project file validation failed. Restoring from backup...");
+            File.Copy(backupPath, projectPath, overwrite: true);
+            Console.Error.WriteLine("Project file restored from backup");
+            return GENERAL_ERROR;
+        }
+
+        Console.WriteLine($"\nSuccessfully updated {appliedCount} package(s)");
+        Console.WriteLine($"Backup saved to: {backupPath}");
+
+        return SUCCESS;
+    }
+    catch (HttpRequestException ex)
+    {
+        Console.Error.WriteLine($"Network error: {ex.Message}");
+        return NETWORK_ERROR;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: {ex.Message}");
+        return GENERAL_ERROR;
+    }
+}
+
+internal static class PackageUpdater
+{
+    internal static void UpdatePackageVersion(string projectPath, string packageName, string newVersion)
+    {
+        try
+        {
+            var doc = XDocument.Load(projectPath);
+            var packageRef = doc.Descendants("PackageReference")
+                .FirstOrDefault(p => p.Attribute("Include")?.Value == packageName);
+
+            if (packageRef == null)
+            {
+                throw new Exception($"Package '{packageName}' not found in project file");
+            }
+
+            var versionAttr = packageRef.Attribute("Version");
+            if (versionAttr != null)
+            {
+                versionAttr.Value = newVersion;
+            }
+
+            doc.Save(projectPath);
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to update package: {ex.Message}", ex);
+        }
+    }
+
+    internal static string CreateBackup(string projectPath)
+    {
+        var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
+        var directory = Path.GetDirectoryName(projectPath) ?? Path.GetTempPath();
+        var fileName = Path.GetFileNameWithoutExtension(projectPath);
+        var extension = Path.GetExtension(projectPath);
+        var backupPath = Path.Combine(directory, $"{fileName}.backup.{timestamp}{extension}");
+
+        File.Copy(projectPath, backupPath);
+        return backupPath;
+    }
+
+    internal static bool ValidateProjectFile(string projectPath)
+    {
+        try
+        {
+            if (!File.Exists(projectPath))
+            {
+                return false;
+            }
+
+            var doc = XDocument.Load(projectPath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+
+internal static class PolicyEngine
+{
+    internal static bool ShouldUpdate(NuGetVersion current, NuGetVersion latest, UpdatePolicy policy)
+    {
+        var updateType = PackageScanner.DetermineUpdateType(current, latest);
+
+        return policy switch
+        {
+            UpdatePolicy.Patch => updateType == UpdateType.Patch,
+            UpdatePolicy.Minor => updateType is UpdateType.Patch or UpdateType.Minor,
+            UpdatePolicy.Major => true,
+            _ => false
+        };
+    }
+
+    internal static List<UpdateCandidate> FilterUpdatesByPolicy(List<UpdateCandidate> updates, UpdatePolicy policy)
+    {
+        return updates.Where(u =>
+        {
+            return policy switch
+            {
+                UpdatePolicy.Patch => u.UpdateType == UpdateType.Patch,
+                UpdatePolicy.Minor => u.UpdateType is UpdateType.Patch or UpdateType.Minor,
+                UpdatePolicy.Major => true,
+                _ => false
+            };
+        }).ToList();
+    }
+
+    internal static List<UpdateCandidate> FilterByExclusions(List<UpdateCandidate> updates, string[] exclusions)
+    {
+        if (exclusions == null || exclusions.Length == 0)
+        {
+            return updates;
+        }
+
+        return updates.Where(u => !IsPackageExcluded(u.PackageId, exclusions)).ToList();
+    }
+
+    internal static bool IsPackageExcluded(string packageId, string[] exclusions)
+    {
+        return exclusions.Any(e => string.Equals(e, packageId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static List<UpdateCandidate> ApplyPolicies(List<UpdateCandidate> updates, UpdatePolicy policy, string[] exclusions)
+    {
+        var filtered = FilterUpdatesByPolicy(updates, policy);
+        return FilterByExclusions(filtered, exclusions);
+    }
+}
+
+internal static class DryRunService
+{
+    internal static void PreviewUpdates(string projectPath, List<UpdateCandidate> updates)
+    {
+        Console.WriteLine("DRY RUN - No changes will be made");
+        Console.WriteLine();
+
+        if (updates.Count == 0)
+        {
+            Console.WriteLine("No updates to apply");
+            return;
+        }
+
+        Console.WriteLine($"The following updates would be applied to: {Path.GetFileName(projectPath)}");
+        Console.WriteLine(new string('-', 80));
+        Console.WriteLine($"{"Package",-40} {"Current",10} → {"New",10} {"Type",10}");
+        Console.WriteLine(new string('-', 80));
+
+        foreach (var update in updates)
+        {
+            var newVersion = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
+            Console.WriteLine($"{update.PackageId,-40} {update.CurrentVersion,10} → {newVersion,10} {update.UpdateType,10}");
+        }
+
+        Console.WriteLine(new string('-', 80));
+        GenerateDryRunSummary(updates);
+    }
+
+    internal static string FormatDryRunOutput(List<UpdateCandidate> updates)
+    {
+        var lines = new List<string>();
+
+        foreach (var update in updates)
+        {
+            var newVersion = update.LatestPrereleaseVersion ?? update.LatestStableVersion;
+            lines.Add($"{update.PackageId}: {update.CurrentVersion} → {newVersion}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    internal static void GenerateDryRunSummary(List<UpdateCandidate> updates)
+    {
+        var patchCount = updates.Count(u => u.UpdateType == UpdateType.Patch);
+        var minorCount = updates.Count(u => u.UpdateType == UpdateType.Minor);
+        var majorCount = updates.Count(u => u.UpdateType == UpdateType.Major);
+
+        Console.WriteLine($"Total updates: {updates.Count}");
+        Console.WriteLine($"  Patch: {patchCount}");
+        Console.WriteLine($"  Minor: {minorCount}");
+        Console.WriteLine($"  Major: {majorCount}");
+    }
+
+    internal static void CompareBeforeAfter(string packageName, string oldVersion, string newVersion)
+    {
+        Console.WriteLine($"  - {packageName}: {oldVersion}");
+        Console.WriteLine($"  + {packageName}: {newVersion}");
     }
 }
 
