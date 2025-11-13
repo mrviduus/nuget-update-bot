@@ -731,6 +731,287 @@ internal static class SummaryCalculator
     }
 }
 
+internal static class ConfigurationLoader
+{
+    internal static BotConfiguration LoadFromFile(string filePath)
+    {
+        try
+        {
+            if (!File.Exists(filePath))
+            {
+                return GetDefaultConfiguration();
+            }
+
+            var json = File.ReadAllText(filePath);
+            if (string.IsNullOrWhiteSpace(json) || json.Trim() == "{}")
+            {
+                return GetDefaultConfiguration();
+            }
+
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                AllowTrailingCommas = true
+            };
+
+            // Parse JSON manually to handle missing properties with defaults
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = true });
+            var root = doc.RootElement;
+
+            var updatePolicy = UpdatePolicy.Major;
+            if (root.TryGetProperty("UpdatePolicy", out var policyElement) ||
+                root.TryGetProperty("updatePolicy", out policyElement))
+            {
+                if (Enum.TryParse<UpdatePolicy>(policyElement.GetString(), ignoreCase: true, out var parsedPolicy))
+                {
+                    updatePolicy = parsedPolicy;
+                }
+            }
+
+            var excludePackages = new List<string>();
+            if (root.TryGetProperty("ExcludePackages", out var excludeElement) ||
+                root.TryGetProperty("excludePackages", out excludeElement))
+            {
+                if (excludeElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in excludeElement.EnumerateArray())
+                    {
+                        var pkg = item.GetString();
+                        if (!string.IsNullOrEmpty(pkg))
+                        {
+                            excludePackages.Add(pkg);
+                        }
+                    }
+                }
+            }
+
+            var includePrerelease = false;
+            if (root.TryGetProperty("IncludePrerelease", out var prereleaseElement) ||
+                root.TryGetProperty("includePrerelease", out prereleaseElement))
+            {
+                includePrerelease = prereleaseElement.GetBoolean();
+            }
+
+            var maxParallelism = 5;
+            if (root.TryGetProperty("MaxParallelism", out var parallelismElement) ||
+                root.TryGetProperty("maxParallelism", out parallelismElement))
+            {
+                maxParallelism = parallelismElement.GetInt32();
+            }
+
+            var updateRules = new List<UpdateRule>();
+            if (root.TryGetProperty("UpdateRules", out var rulesElement) ||
+                root.TryGetProperty("updateRules", out rulesElement))
+            {
+                if (rulesElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var ruleElement in rulesElement.EnumerateArray())
+                    {
+                        var pattern = "";
+                        if (ruleElement.TryGetProperty("Pattern", out var patternElement) ||
+                            ruleElement.TryGetProperty("pattern", out patternElement))
+                        {
+                            pattern = patternElement.GetString() ?? "";
+                        }
+
+                        var policy = UpdatePolicy.Major;
+                        if (ruleElement.TryGetProperty("Policy", out var rulePolicyElement) ||
+                            ruleElement.TryGetProperty("policy", out rulePolicyElement))
+                        {
+                            if (Enum.TryParse<UpdatePolicy>(rulePolicyElement.GetString(), ignoreCase: true, out var parsedRulePolicy))
+                            {
+                                policy = parsedRulePolicy;
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(pattern))
+                        {
+                            updateRules.Add(new UpdateRule(pattern, policy));
+                        }
+                    }
+                }
+            }
+
+            return new BotConfiguration(
+                UpdatePolicy: updatePolicy,
+                ExcludePackages: excludePackages,
+                IncludePrerelease: includePrerelease,
+                MaxParallelism: maxParallelism,
+                UpdateRules: updateRules
+            );
+        }
+        catch (JsonException)
+        {
+            // Invalid JSON - return defaults
+            return GetDefaultConfiguration();
+        }
+        catch (Exception)
+        {
+            // Any other error - return defaults
+            return GetDefaultConfiguration();
+        }
+    }
+
+    internal static BotConfiguration LoadFromEnvironment()
+    {
+        var updatePolicy = UpdatePolicy.Major;
+        var envPolicy = Environment.GetEnvironmentVariable("NUGET_BOT_UPDATE_POLICY");
+        if (!string.IsNullOrEmpty(envPolicy))
+        {
+            if (Enum.TryParse<UpdatePolicy>(envPolicy, ignoreCase: true, out var parsedPolicy))
+            {
+                updatePolicy = parsedPolicy;
+            }
+        }
+
+        var includePrerelease = false;
+        var envPrerelease = Environment.GetEnvironmentVariable("NUGET_BOT_INCLUDE_PRERELEASE");
+        if (!string.IsNullOrEmpty(envPrerelease))
+        {
+            bool.TryParse(envPrerelease, out includePrerelease);
+        }
+
+        var maxParallelism = 5;
+        var envParallelism = Environment.GetEnvironmentVariable("NUGET_BOT_MAX_PARALLELISM");
+        if (!string.IsNullOrEmpty(envParallelism))
+        {
+            if (int.TryParse(envParallelism, out var parsedParallelism) && parsedParallelism > 0)
+            {
+                maxParallelism = parsedParallelism;
+            }
+        }
+
+        var excludePackages = new List<string>();
+        var envExclude = Environment.GetEnvironmentVariable("NUGET_BOT_EXCLUDE_PACKAGES");
+        if (!string.IsNullOrEmpty(envExclude))
+        {
+            excludePackages = envExclude
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim())
+                .Where(p => !string.IsNullOrEmpty(p))
+                .ToList();
+        }
+
+        return new BotConfiguration(
+            UpdatePolicy: updatePolicy,
+            ExcludePackages: excludePackages,
+            IncludePrerelease: includePrerelease,
+            MaxParallelism: maxParallelism,
+            UpdateRules: new List<UpdateRule>()
+        );
+    }
+
+    internal static BotConfiguration MergeConfigurations(BotConfiguration fileConfig, BotConfiguration overrideConfig)
+    {
+        // Override config takes precedence over file config
+        return new BotConfiguration(
+            UpdatePolicy: overrideConfig.UpdatePolicy,
+            ExcludePackages: overrideConfig.ExcludePackages.Count > 0 ? overrideConfig.ExcludePackages : fileConfig.ExcludePackages,
+            IncludePrerelease: overrideConfig.IncludePrerelease,
+            MaxParallelism: overrideConfig.MaxParallelism,
+            UpdateRules: overrideConfig.UpdateRules.Count > 0 ? overrideConfig.UpdateRules : fileConfig.UpdateRules
+        );
+    }
+
+    internal static bool ValidateConfiguration(BotConfiguration config, out List<string> errors)
+    {
+        errors = new List<string>();
+
+        if (config.MaxParallelism <= 0)
+        {
+            errors.Add("MaxParallelism must be greater than 0");
+        }
+
+        foreach (var rule in config.UpdateRules)
+        {
+            if (string.IsNullOrWhiteSpace(rule.Pattern))
+            {
+                errors.Add("UpdateRule Pattern cannot be empty");
+            }
+        }
+
+        return errors.Count == 0;
+    }
+
+    private static BotConfiguration GetDefaultConfiguration()
+    {
+        return new BotConfiguration(
+            UpdatePolicy: UpdatePolicy.Major,
+            ExcludePackages: new List<string>(),
+            IncludePrerelease: false,
+            MaxParallelism: 5,
+            UpdateRules: new List<UpdateRule>()
+        );
+    }
+}
+
+internal static class RuleMatcher
+{
+    internal static bool MatchesPattern(string packageName, string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern))
+        {
+            return false;
+        }
+
+        // Convert glob pattern to regex
+        // * matches any characters within a segment
+        // Exact match if no wildcards
+        if (!pattern.Contains('*'))
+        {
+            return packageName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Convert glob to regex pattern
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("\\*", ".*")
+            + "$";
+
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            packageName,
+            regexPattern,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        );
+    }
+
+    internal static UpdateRule? FindMatchingRule(string packageName, List<UpdateRule> rules)
+    {
+        foreach (var rule in rules)
+        {
+            if (rule.Pattern != null && MatchesPattern(packageName, rule.Pattern))
+            {
+                return rule;
+            }
+        }
+
+        return null;
+    }
+
+    internal static UpdatePolicy GetEffectivePolicy(string packageName, List<UpdateRule> rules, UpdatePolicy defaultPolicy)
+    {
+        var matchingRule = FindMatchingRule(packageName, rules);
+        return matchingRule?.Policy ?? defaultPolicy;
+    }
+
+    internal static bool IsPackageExcluded(string packageName, List<string> excludeList)
+    {
+        if (excludeList.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var pattern in excludeList)
+        {
+            if (MatchesPattern(packageName, pattern))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
 // Type Definitions
 public enum UpdateType { Patch, Minor, Major, Prerelease }
 public enum UpdatePolicy { Patch, Minor, Major }
@@ -750,10 +1031,8 @@ public record UpdateCandidate(
 );
 
 internal record UpdateRule(
-    string? PackagePattern,
-    UpdatePolicy Policy,
-    bool AllowPrerelease = false,
-    string? MaxVersion = null
+    string Pattern,
+    UpdatePolicy Policy
 );
 
 internal record ProjectContext(
@@ -782,10 +1061,9 @@ internal record UpdateSummary(
 );
 
 internal record BotConfiguration(
-    string[] ExcludedPackages,
-    UpdatePolicy DefaultPolicy,
+    UpdatePolicy UpdatePolicy,
+    List<string> ExcludePackages,
     bool IncludePrerelease,
-    int TimeoutSeconds,
-    OutputFormat OutputFormat,
-    List<UpdateRule> Rules
+    int MaxParallelism,
+    List<UpdateRule> UpdateRules
 );

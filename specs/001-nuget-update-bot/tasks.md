@@ -114,19 +114,19 @@
 
 ### Tests for User Story 4
 
-- [ ] T054 [P] [US4] Write test for configuration file loading in NugetUpdateBot.Tests/UnitTests/ConfigurationTests.cs
-- [ ] T055 [P] [US4] Write test for rule pattern matching in NugetUpdateBot.Tests/UnitTests/RuleMatchingTests.cs
-- [ ] T056 [P] [US4] Write test for environment variable overrides in NugetUpdateBot.Tests/UnitTests/EnvironmentConfigTests.cs
+- [X] T054 [P] [US4] Write test for configuration file loading in NugetUpdateBot.Tests/UnitTests/ConfigurationTests.cs
+- [X] T055 [P] [US4] Write test for rule pattern matching in NugetUpdateBot.Tests/UnitTests/RuleMatchingTests.cs
+- [X] T056 [P] [US4] Write test for environment variable overrides in NugetUpdateBot.Tests/UnitTests/EnvironmentConfigTests.cs
 
 ### Implementation for User Story 4
 
-- [ ] T057 [US4] Implement JSON configuration file parsing using Microsoft.Extensions.Configuration in Program.cs
-- [ ] T058 [US4] Add environment variable configuration support (NUGET_BOT_* prefix) in Program.cs
-- [ ] T059 [US4] Create rule pattern matching logic using glob patterns in Program.cs
-- [ ] T060 [US4] Implement configuration priority (CLI > env > file > defaults) in Program.cs
-- [ ] T061 [US4] Apply update rules during scan and update operations in Program.cs
-- [ ] T062 [US4] Add configuration validation and error messages in Program.cs
-- [ ] T063 [US4] Verify all US4 tests pass and configuration is respected
+- [X] T057 [US4] Implement JSON configuration file parsing using Microsoft.Extensions.Configuration in Program.cs
+- [X] T058 [US4] Add environment variable configuration support (NUGET_BOT_* prefix) in Program.cs
+- [X] T059 [US4] Create rule pattern matching logic using glob patterns in Program.cs
+- [X] T060 [US4] Implement configuration priority (CLI > env > file > defaults) in Program.cs
+- [X] T061 [US4] Apply update rules during scan and update operations in Program.cs
+- [X] T062 [US4] Add configuration validation and error messages in Program.cs
+- [X] T063 [US4] Verify all US4 tests pass and configuration is respected
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
