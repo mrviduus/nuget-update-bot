@@ -82,6 +82,9 @@ Thumbs.db
 *.swp
 *~
 
+# Claude Code
+.claude/
+
 # Logs
 *.log
 logs/

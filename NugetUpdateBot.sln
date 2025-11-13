@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NugetUpdateBot", "NugetUpdateBot\NugetUpdateBot.csproj", "{505898D4-D9D5-6639-34C6-F520AA02C531}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NugetUpdateBot", "src\NugetUpdateBot\NugetUpdateBot.csproj", "{505898D4-D9D5-6639-34C6-F520AA02C531}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NugetUpdateBot.Tests", "NugetUpdateBot.Tests\NugetUpdateBot.Tests.csproj", "{AC82831E-C0AE-4AFC-9C8C-BE9FFCFBBD8E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NugetUpdateBot.Tests", "src\NugetUpdateBot.Tests\NugetUpdateBot.Tests.csproj", "{AC82831E-C0AE-4AFC-9C8C-BE9FFCFBBD8E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
