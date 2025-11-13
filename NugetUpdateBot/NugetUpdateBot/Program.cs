@@ -22,10 +22,19 @@ var logger = NullLogger.Instance;
 var throttler = new SemaphoreSlim(5, 5);
 
 // Main command setup
-var rootCommand = new RootCommand("NuGet Update Bot - Scan and update NuGet packages");
+var rootCommand = new RootCommand("NuGet Update Bot - Automatically manage NuGet package updates in your .NET projects");
 
 // Scan command
-var scanCommand = new Command("scan", "Scan project for outdated NuGet packages");
+var scanCommand = new Command("scan", @"Scan a .NET project for outdated NuGet packages.
+
+This command analyzes your project file (.csproj) and checks each NuGet package
+against the latest available versions on NuGet.org. It reports which packages
+have newer versions available and categorizes updates as Major, Minor, or Patch.
+
+Examples:
+  nuget-update-bot scan --project MyApp.csproj
+  nuget-update-bot scan -p MyApp.csproj --include-prerelease
+  nuget-update-bot scan -p MyApp.csproj -v --no-cache");
 var projectOption = new Option<string>("--project", "-p") { Description = "Path to .csproj file or directory", IsRequired = true };
 var prereleaseOption = new Option<bool>("--include-prerelease") { Description = "Include pre-release versions" };
 var verboseOption = new Option<bool>("--verbose", "-v") { Description = "Enable verbose output" };
@@ -44,7 +53,22 @@ scanCommand.SetHandler(async (string project, bool includePrerelease, bool verbo
 rootCommand.AddCommand(scanCommand);
 
 // Update command
-var updateCommand = new Command("update", "Update outdated NuGet packages");
+var updateCommand = new Command("update", @"Update outdated NuGet packages in a .NET project.
+
+This command modifies your project file (.csproj) to update package versions.
+You can control which updates to apply using the --policy option:
+  - Patch: Only bug fixes (1.0.0 → 1.0.1)
+  - Minor: New features, backward compatible (1.0.0 → 1.1.0) [default]
+  - Major: Breaking changes (1.0.0 → 2.0.0)
+
+Use --dry-run to preview changes without modifying files.
+Use --exclude to skip specific packages.
+
+Examples:
+  nuget-update-bot update --project MyApp.csproj --dry-run
+  nuget-update-bot update -p MyApp.csproj --policy Patch
+  nuget-update-bot update -p MyApp.csproj --exclude Newtonsoft.Json
+  nuget-update-bot update -p MyApp.csproj --policy Major -v");
 var updateProjectOption = new Option<string>("--project", "-p") { Description = "Path to .csproj file or directory", IsRequired = true };
 var dryRunOption = new Option<bool>("--dry-run") { Description = "Preview updates without applying them" };
 var policyOption = new Option<UpdatePolicy>("--policy", () => UpdatePolicy.Minor) { Description = "Update policy: Patch, Minor, or Major" };
@@ -67,7 +91,21 @@ updateCommand.SetHandler(async (string project, bool dryRun, UpdatePolicy policy
 rootCommand.AddCommand(updateCommand);
 
 // Report command
-var reportCommand = new Command("report", "Generate update report");
+var reportCommand = new Command("report", @"Generate a report of outdated NuGet packages.
+
+This command analyzes your project and generates a detailed report of available
+package updates. Reports can be formatted as console tables or JSON for integration
+with CI/CD pipelines and other automation tools.
+
+Output formats:
+  - Console: Human-readable table with package details (default)
+  - Json: Structured data for automation and reporting tools
+
+Examples:
+  nuget-update-bot report --project MyApp.csproj
+  nuget-update-bot report -p MyApp.csproj --format Json --output report.json
+  nuget-update-bot report -p MyApp.csproj --include-up-to-date
+  nuget-update-bot report -p MyApp.csproj --format Json -v");
 var reportProjectOption = new Option<string>("--project", "-p") { Description = "Path to .csproj file or directory", IsRequired = true };
 var formatOption = new Option<OutputFormat>("--format", () => OutputFormat.Console) { Description = "Output format: Console or Json" };
 var outputOption = new Option<string?>("--output", "-o") { Description = "Output file path (for JSON format)" };
@@ -92,20 +130,95 @@ rootCommand.AddCommand(reportCommand);
 // Execute
 return await rootCommand.InvokeAsync(args);
 
+// Input Validation Helper
+static bool ValidateProjectPath(string projectPath, out string? error)
+{
+    error = null;
+
+    if (string.IsNullOrWhiteSpace(projectPath))
+    {
+        error = "Project path cannot be empty";
+        return false;
+    }
+
+    // Normalize path
+    projectPath = Path.GetFullPath(projectPath);
+
+    // Check if file exists
+    if (!File.Exists(projectPath))
+    {
+        error = $"Project file not found: {projectPath}";
+        return false;
+    }
+
+    // Check if it's a .csproj file
+    if (!projectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+    {
+        error = $"Invalid project file extension. Expected .csproj file, got: {Path.GetExtension(projectPath)}";
+        return false;
+    }
+
+    // Check if file is readable
+    try
+    {
+        using var stream = File.OpenRead(projectPath);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        error = $"Access denied. Cannot read project file: {projectPath}";
+        return false;
+    }
+    catch (IOException ex)
+    {
+        error = $"Cannot read project file: {ex.Message}";
+        return false;
+    }
+
+    return true;
+}
+
+static bool ValidateOutputPath(string? outputPath, out string? error)
+{
+    error = null;
+
+    if (string.IsNullOrWhiteSpace(outputPath))
+    {
+        return true; // Optional parameter
+    }
+
+    try
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            error = $"Output directory does not exist: {directory}";
+            return false;
+        }
+    }
+    catch (Exception ex)
+    {
+        error = $"Invalid output path: {ex.Message}";
+        return false;
+    }
+
+    return true;
+}
+
 // Command Handlers
 async Task<int> ScanCommandHandler(string projectPath, bool includePrerelease, bool verbose, bool noCache)
 {
     try
     {
+        // Validate input
+        if (!ValidateProjectPath(projectPath, out var error))
+        {
+            Console.Error.WriteLine($"Error: {error}");
+            return FILE_NOT_FOUND;
+        }
+
         if (verbose)
         {
             Console.WriteLine($"Scanning project: {projectPath}");
-        }
-
-        if (!File.Exists(projectPath))
-        {
-            Console.Error.WriteLine($"Error: Project file not found: {projectPath}");
-            return FILE_NOT_FOUND;
         }
 
         var packages = PackageScanner.ParseProjectFile(projectPath);
@@ -135,6 +248,13 @@ async Task<int> UpdateCommandHandler(string projectPath, bool dryRun, UpdatePoli
 {
     try
     {
+        // Validate input
+        if (!ValidateProjectPath(projectPath, out var error))
+        {
+            Console.Error.WriteLine($"Error: {error}");
+            return FILE_NOT_FOUND;
+        }
+
         if (verbose)
         {
             Console.WriteLine($"Updating project: {projectPath}");
@@ -143,12 +263,6 @@ async Task<int> UpdateCommandHandler(string projectPath, bool dryRun, UpdatePoli
             {
                 Console.WriteLine($"Excluded packages: {string.Join(", ", exclude)}");
             }
-        }
-
-        if (!File.Exists(projectPath))
-        {
-            Console.Error.WriteLine($"Error: Project file not found: {projectPath}");
-            return FILE_NOT_FOUND;
         }
 
         // Scan for updates
@@ -241,16 +355,23 @@ async Task<int> ReportCommandHandler(string projectPath, OutputFormat format, st
 {
     try
     {
+        // Validate input
+        if (!ValidateProjectPath(projectPath, out var error))
+        {
+            Console.Error.WriteLine($"Error: {error}");
+            return FILE_NOT_FOUND;
+        }
+
+        if (!ValidateOutputPath(output, out var outputError))
+        {
+            Console.Error.WriteLine($"Error: {outputError}");
+            return FILE_NOT_FOUND;
+        }
+
         if (verbose)
         {
             Console.WriteLine($"Generating report for: {projectPath}");
             Console.WriteLine($"Format: {format}");
-        }
-
-        if (!File.Exists(projectPath))
-        {
-            Console.Error.WriteLine($"Error: Project file not found: {projectPath}");
-            return FILE_NOT_FOUND;
         }
 
         // Scan for updates
