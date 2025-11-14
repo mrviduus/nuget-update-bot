@@ -12,6 +12,7 @@ public class PackageUpdaterService
     /// <summary>
     /// Updates a package version in the project file or Directory.Packages.props.
     /// Automatically detects if the project uses Central Package Management.
+    /// When CPM is detected, ONLY updates Directory.Packages.props for safety.
     /// </summary>
     public void UpdatePackageVersion(string projectPath, string packageName, string newVersion)
     {
@@ -20,13 +21,18 @@ public class PackageUpdaterService
             // Check if project uses Central Package Management
             if (UsesCentralPackageManagement(projectPath))
             {
-                // Find and update Directory.Packages.props
+                // SAFETY: When CPM is detected, ONLY update Directory.Packages.props
+                // Do NOT touch individual .csproj files to avoid inconsistencies
                 var packagesPropsPath = FindDirectoryPackagesProps(projectPath);
-                if (packagesPropsPath != null)
+                if (packagesPropsPath == null)
                 {
-                    UpdatePackageVersionInCpm(packagesPropsPath, packageName, newVersion);
-                    return;
+                    throw new InvalidOperationException(
+                        $"Project uses Central Package Management but Directory.Packages.props not found. " +
+                        $"Searched up to 5 directory levels from {Path.GetDirectoryName(projectPath)}");
                 }
+
+                UpdatePackageVersionInCpm(packagesPropsPath, packageName, newVersion);
+                return;
             }
 
             // Traditional approach: update Version attribute in .csproj
