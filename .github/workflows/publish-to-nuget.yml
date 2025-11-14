@@ -1,14 +1,20 @@
 name: Publish to NuGet.org
 
 on:
+  push:
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 1.0.0)'
-        required: true
-        default: '1.0.0'
-  release:
-    types: [published]
+        description: 'Version to publish (leave empty for auto: 1.0.0.BUILD_NUMBER or tag version)'
+        required: false
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
 jobs:
   publish:
@@ -17,18 +23,31 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Update version
-        if: github.event.inputs.version != ''
+      - name: Extract version
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          echo "Updating version to $VERSION"
-          sed -i "s/<Version>.*<\/Version>/<Version>$VERSION<\/Version>/" src/NugetUpdateBot/NugetUpdateBot.csproj
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="1.0.${{ github.run_number }}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version set to: $VERSION"
+
+      - name: Update .csproj with Version
+        run: |
+          sed -i "s|<Version>.*</Version>|<Version>${{ env.VERSION }}</Version>|" src/NugetUpdateBot/NugetUpdateBot.csproj
+          echo "Updated version in .csproj to: ${{ env.VERSION }}"
+          cat src/NugetUpdateBot/NugetUpdateBot.csproj | grep Version
 
       - name: Restore dependencies
         run: dotnet restore
@@ -40,10 +59,10 @@ jobs:
         run: dotnet test -c Release --no-build --verbosity normal
 
       - name: Pack
-        run: dotnet pack -c Release --no-build -o ./nupkg src/NugetUpdateBot/NugetUpdateBot.csproj
+        run: dotnet pack -c Release --no-build -o ./artifacts src/NugetUpdateBot/NugetUpdateBot.csproj
 
       - name: List package
-        run: ls -lh ./nupkg/
+        run: ls -lh ./artifacts/
 
       - name: Push to NuGet.org
         env:
@@ -54,7 +73,7 @@ jobs:
             exit 1
           fi
 
-          dotnet nuget push ./nupkg/*.nupkg \
+          dotnet nuget push ./artifacts/*.nupkg \
             --api-key $NUGET_API_KEY \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
@@ -62,5 +81,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nuget-package
-          path: ./nupkg/*.nupkg
+          name: nuget-package-${{ env.VERSION }}
+          path: ./artifacts/*.nupkg
