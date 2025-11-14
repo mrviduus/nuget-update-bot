@@ -87,12 +87,12 @@ jobs:
             echo "No changes to commit"
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
-            git commit -m "chore: update NuGet packages
+            COMMIT_MSG="chore: update NuGet packages
 
-Automated NuGet package updates by NugetUpdateBot
+          Automated NuGet package updates by NugetUpdateBot
 
-Generated on: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-"
+          Generated on: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            git commit -m "$COMMIT_MSG"
             git push origin "${{ env.branch }}"
             echo "has_changes=true" >> $GITHUB_OUTPUT
           fi
