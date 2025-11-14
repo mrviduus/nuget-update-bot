@@ -25,9 +25,20 @@ The NugetUpdateBot can be integrated into GitHub Actions workflows to automatica
 3. **Install NugetUpdateBot**: Installs the latest version as a global .NET tool
 4. **Scan for Updates**: Scans project files for outdated packages
 5. **Create Branch**: If updates are found, creates a new branch (e.g., `nuget-updates-20250113`)
-6. **Update Packages**: Updates all .csproj files in the repository
+6. **Update Packages**: Updates package versions
+   - **With Central Package Management (CPM)**: ONLY updates Directory.Packages.props for safety
+   - **Without CPM**: Updates Version attributes in .csproj files
 7. **Commit & Push**: Commits changes and pushes to the new branch
 8. **Create PR**: Creates a Pull Request with the updates
+
+### Central Package Management (CPM) Support
+
+**IMPORTANT**: If your repository uses Directory.Packages.props (Central Package Management), NugetUpdateBot will:
+- ✅ **ONLY** update the Directory.Packages.props file
+- ❌ **NEVER** touch individual .csproj files
+- 🛡️ **Ensure** version consistency across your entire solution
+
+This safety feature prevents accidental version conflicts and maintains CPM integrity.
 
 ## Setup Instructions
 

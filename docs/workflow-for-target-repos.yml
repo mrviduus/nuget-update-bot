@@ -1,6 +1,11 @@
 # Copy this file to .github/workflows/update-nuget-packages.yml in your target repository
 # For LoadSurge: Use schedule cron '0 9 * * 6' (Saturday)
 # For xUnitV3LoadFramework: Use schedule cron '0 9 * * 1' (Monday)
+#
+# IMPORTANT - Central Package Management (CPM):
+# If your repository uses Directory.Packages.props (CPM), the bot will ONLY update
+# that file and will NOT touch individual .csproj files. This ensures version
+# consistency and prevents accidental conflicts between centralized and local versions.
 
 name: Update NuGet Packages
 
