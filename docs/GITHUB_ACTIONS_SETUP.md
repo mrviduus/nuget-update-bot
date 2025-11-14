@@ -10,17 +10,13 @@ The NugetUpdateBot can be integrated into GitHub Actions workflows to automatica
 3. Create Pull Requests with the updates
 4. Run on a schedule (e.g., weekly)
 
-## Current Workflows
+## Recommended Approach
 
-### LoadSurge Repository
-- **Schedule**: Every Saturday at 9:00 AM UTC
-- **Workflow**: `.github/workflows/update-loadsurge.yml`
-- **Repository**: https://github.com/mrviduus/LoadSurge
+**Add the workflow directly to each repository** that needs automated updates. This is simpler and follows standard practices.
 
-### xUnitV3LoadFramework Repository
-- **Schedule**: Every Monday at 9:00 AM UTC
-- **Workflow**: `.github/workflows/update-xunitv3loadframework.yml`
-- **Repository**: https://github.com/mrviduus/xUnitV3LoadFramework
+### Example Repositories
+- **LoadSurge**: Schedule every Saturday at 9:00 AM UTC
+- **xUnitV3LoadFramework**: Schedule every Monday at 9:00 AM UTC
 
 ## How It Works
 
