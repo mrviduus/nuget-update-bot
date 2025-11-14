@@ -51,6 +51,7 @@ All command handlers follow dependency injection and Single Responsibility Princ
 
 **PackageScannerService** (`src/NugetUpdateBot/Services/PackageScannerService.cs`)
 - Parses .csproj files to extract PackageReference elements
+- **CPM Support**: Automatically detects CPM and reads package versions from Directory.Packages.props
 - Queries NuGet.org API for available versions
 - Compares current vs. latest versions
 - Uses semaphore-based throttling for API calls
@@ -144,7 +145,8 @@ Then add/update version in `Directory.Packages.props`:
 - Target: .NET 9.0
 - Language: C# 12.0
 - Nullable reference types enabled
-- TreatWarningsAsErrors: false (to allow development flexibility)
+- TreatWarningsAsErrors: false (globally in Directory.Build.props)
+- TreatWarningsAsErrors: true (in NugetUpdateBot.csproj for main application)
 
 ### Testing
 Tests are integration-focused and create temporary project files. They test:
@@ -152,3 +154,29 @@ Tests are integration-focused and create temporary project files. They test:
 - CPM detection and updates
 - End-to-end workflows (scan → update → report)
 - Error handling and backup/restore scenarios
+
+### Packaging and Publishing
+The project is configured as a .NET global tool:
+```bash
+# Pack the tool
+dotnet pack src/NugetUpdateBot/NugetUpdateBot.csproj
+
+# Install locally for testing
+dotnet tool install --global --add-source ./src/NugetUpdateBot/bin/Release NugetUpdateBot
+
+# Uninstall
+dotnet tool uninstall --global NugetUpdateBot
+```
+
+Tool configuration in NugetUpdateBot.csproj:
+- **PackAsTool**: true
+- **ToolCommandName**: nuget-update-bot
+- **Version**: Managed in project file
+
+### Dependency Injection Setup
+The application uses manual dependency injection in [Program.cs:15-30](src/NugetUpdateBot/Program.cs#L15-L30). All services are constructed once at startup:
+1. Core dependencies (NuGet repository, throttler, logger)
+2. Services (validator, scanner, updater, policy engine, etc.)
+3. Command handlers (injected with all required services)
+
+This approach keeps dependencies explicit and aids in testing through `InternalsVisibleTo` assembly attribute.

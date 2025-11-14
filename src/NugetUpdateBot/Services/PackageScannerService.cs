@@ -29,6 +29,7 @@ public class PackageScannerService
 
     /// <summary>
     /// Parses a project file and extracts package references.
+    /// Supports both traditional PackageReference (with Version) and Central Package Management.
     /// </summary>
     public List<PackageReference> ParseProjectFile(string projectPath)
     {
@@ -37,18 +38,50 @@ public class PackageScannerService
         try
         {
             var doc = XDocument.Load(projectPath);
-            var packageReferences = doc.Descendants("PackageReference");
+            var packageReferences = doc.Descendants("PackageReference").ToList();
 
-            foreach (var packageRef in packageReferences)
+            // Check if project uses Central Package Management
+            var usesCpm = UsesCentralPackageManagement(projectPath);
+
+            if (usesCpm)
             {
-                var name = packageRef.Attribute("Include")?.Value;
-                var versionStr = packageRef.Attribute("Version")?.Value;
-
-                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(versionStr))
+                // Load versions from Directory.Packages.props
+                var directoryPackagesProps = FindDirectoryPackagesProps(projectPath);
+                if (directoryPackagesProps == null)
                 {
-                    if (NuGetVersion.TryParse(versionStr, out var version))
+                    throw new InvalidOperationException(
+                        $"Project uses Central Package Management but Directory.Packages.props not found. " +
+                        $"Searched up to 5 directory levels from {Path.GetDirectoryName(projectPath)}");
+                }
+
+                var packageVersions = LoadPackageVersionsFromCpm(directoryPackagesProps);
+
+                // Match PackageReferences with their versions from CPM
+                foreach (var packageRef in packageReferences)
+                {
+                    var name = packageRef.Attribute("Include")?.Value;
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    if (packageVersions.TryGetValue(name, out var version))
                     {
                         packages.Add(new PackageReference(name, version));
+                    }
+                }
+            }
+            else
+            {
+                // Traditional approach: read Version attribute from .csproj
+                foreach (var packageRef in packageReferences)
+                {
+                    var name = packageRef.Attribute("Include")?.Value;
+                    var versionStr = packageRef.Attribute("Version")?.Value;
+
+                    if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(versionStr))
+                    {
+                        if (NuGetVersion.TryParse(versionStr, out var version))
+                        {
+                            packages.Add(new PackageReference(name, version));
+                        }
                     }
                 }
             }
@@ -59,6 +92,103 @@ public class PackageScannerService
         }
 
         return packages;
+    }
+
+    /// <summary>
+    /// Checks if a project uses Central Package Management.
+    /// </summary>
+    private bool UsesCentralPackageManagement(string projectPath)
+    {
+        try
+        {
+            var doc = XDocument.Load(projectPath);
+
+            // Check for ManagePackageVersionsCentrally property
+            var cpmProperty = doc.Descendants("ManagePackageVersionsCentrally")
+                .FirstOrDefault()?.Value;
+
+            if (cpmProperty?.Equals("true", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return true;
+            }
+
+            // Also check if PackageReferences lack Version attributes (strong indicator of CPM)
+            var packageRefs = doc.Descendants("PackageReference").ToList();
+            if (packageRefs.Any())
+            {
+                // If more than 80% of PackageReferences lack Version, likely using CPM
+                var withoutVersion = packageRefs.Count(p => p.Attribute("Version") == null);
+                return (double)withoutVersion / packageRefs.Count > 0.8;
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Finds the Directory.Packages.props file by searching parent directories.
+    /// </summary>
+    private string? FindDirectoryPackagesProps(string projectPath)
+    {
+        var projectDir = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(projectDir))
+        {
+            return null;
+        }
+
+        var currentDir = new DirectoryInfo(projectDir);
+
+        // Search up to 5 levels up
+        for (int i = 0; i < 5 && currentDir != null; i++)
+        {
+            var packagesPropsPath = Path.Combine(currentDir.FullName, "Directory.Packages.props");
+            if (File.Exists(packagesPropsPath))
+            {
+                return packagesPropsPath;
+            }
+
+            currentDir = currentDir.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Loads package versions from Directory.Packages.props.
+    /// </summary>
+    private Dictionary<string, NuGetVersion> LoadPackageVersionsFromCpm(string packagesPropsPath)
+    {
+        var versions = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            var doc = XDocument.Load(packagesPropsPath);
+            var packageVersions = doc.Descendants("PackageVersion");
+
+            foreach (var packageVersion in packageVersions)
+            {
+                var name = packageVersion.Attribute("Include")?.Value;
+                var versionStr = packageVersion.Attribute("Version")?.Value;
+
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(versionStr))
+                {
+                    if (NuGetVersion.TryParse(versionStr, out var version))
+                    {
+                        versions[name] = version;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to parse Directory.Packages.props: {ex.Message}", ex);
+        }
+
+        return versions;
     }
 
     /// <summary>
